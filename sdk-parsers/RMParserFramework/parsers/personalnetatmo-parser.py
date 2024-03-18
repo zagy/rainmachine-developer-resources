@@ -57,27 +57,27 @@ class PersonalNetatmo(RMParser):
         #     log.error(self.lastKnownError)
         #     return
 
-        self.getData()
+        station_data = self.getStationData()
         tsStartOfDayUTC = rmCurrentDayTimestamp()
-        if len(self.jsonData["body"]["devices"]) == 0:
+        if len(station_data["body"]["devices"]) == 0:
              self.lastKnownError = "No NetAtmo devices found"
              log.error(self.lastKnownError)
              return
-        self.buildAvailableModules()
+        self.buildAvailableModules(station_data)
         specifiedModules = []
         if self.params["useSpecifiedModules"]:
             modulesString = self.params["specificModules"]
             specifiedModules = modulesString.split(',')
             specifiedModules = [item.strip() for item in specifiedModules]
         if self.params["useSpecifiedModules"]:
-            for device in self.jsonData["body"]["devices"]:
+            for device in station_data["body"]["devices"]:
                 self.getDeviceData(device, specifiedModules)
         else:
-            self.getDeviceData(self.jsonData["body"]["devices"][0], specifiedModules)
+            self.getDeviceData(station_data["body"]["devices"][0], specifiedModules)
 
-    def buildAvailableModules(self):
+    def buildAvailableModules(self, station_data):
         self.params["_availableModules"] = []
-        for device in self.jsonData["body"]["devices"]:
+        for device in station_data["body"]["devices"]:
             if "modules" not in device:
                 continue
 
@@ -200,41 +200,50 @@ class PersonalNetatmo(RMParser):
                     "client_secret" : self.clientSecret
                 }
                 response = self.postRequest(self.authReq, postParams)
-                self.accessToken = self.params['accessToken'] =response['access_token']
+                self.accessToken = self.params['accessToken'] = response['access_token']
                 self.refreshToken = self.params['refreshToken'] = response['refresh_token']
                 self.accessTokenExpiration = int(response['expire_in']) + time.time()
                 return True
         except:
-            log.error("Failed to refresh token.")
+            log.exception("Failed to refresh token.")
             self.accessToken = None
             self.refreshToken = None
             self.accessTokenExpiration = 0
 
         return False
 
-    def getData(self):
-        postParams = {
-            "access_token" : self.accessToken,
-            }
-        self.jsonData = self.postRequest(self.deviceListReq, postParams)
+    def getStationData(self):
+        headers = {"Authorization" : "Bearer " + self.accessToken}
+        req = urllib2.Request(self.deviceListReq, headers=headers)
+        try:
+            response = urllib2.urlopen(req)
+            return json.load(response)
+        except urllib2.HTTPError, e:
+            log.error("Failed getStationData/HTTPError: %s", e.fp.read())
+        except Exception, e:
+            log.exception("Failed getStationData")
 
     def getMeasure(self, moduleID, deviceID, measure):
-        postParams = {
-            "access_token" : self.accessToken,
-            "module_id" : moduleID,
+        headers = {"Authorization" : "Bearer "+self.accessToken}
+        params = {
             "device_id" :deviceID,
+            "module_id" : moduleID,
             "scale" : "1day",
             "type" : measure,
             "date_begin" : rmCurrentDayTimestamp() - 24*3600,
             "date_end" : rmCurrentDayTimestamp() - 1,
             "real_time" : True
         }
+        params_quoted = urlencode(params)
+        req = urllib2.Request(self.getMeasureUrl + '?' + params_quoted, headers=headers)
         try:
-            jsonData = self.postRequest(self.getMeasureUrl, postParams)
-            return jsonData
+            response = urllib2.urlopen(req)
+            return json.load(response)
+        except urllib2.HTTPError, e:
+            log.error("Failed getMeasure/HTTPError (%r): %s", params, e.fp.read())
         except:
+            log.exception("Failed getMeasure")
             return None
-
 
     def postRequest(self, url, params):
         params = urlencode(params)
@@ -244,10 +253,9 @@ class PersonalNetatmo(RMParser):
         try:
             response = urllib2.urlopen(req)
             return json.loads(response.read())
-        except Exception, e:
-            log.exception(e)
-        return None
-
+        except:
+            log.exception("Failed postRequest")
+        return
 
     def __toFloat(self, value):
         try:
